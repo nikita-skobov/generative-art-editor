@@ -46,6 +46,7 @@ pub struct Input {
 
 pub struct Block {
     pub inputs: Vec<Input>,
+    pub num_outputs: usize,
     pub name: String,
     pub color: Color,
     pub run_fn: for<'a> fn(JoinedSlice<'a>, &[Block]),
@@ -84,21 +85,28 @@ impl BlockSet {
 
 impl Block {
     pub fn draw(&self, x: f32, y: f32) {
-        let total_width = self.inputs.len() as f32 * BLOCK_WIDTH_PER_INPUT;
+        let num_parts = self.inputs.len().max(self.num_outputs);
+        let total_width = num_parts as f32 * BLOCK_WIDTH_PER_INPUT;
         let orig_y = y;
-        draw_rectangle(x, y, total_width, BLOCK_HEIGHT, self.color);
+        let orig_x = x;
+        draw_rectangle(orig_x, orig_y, total_width, BLOCK_HEIGHT, self.color);
         let measured = measure_text(&self.name, None, 26, 1.0);
         let y = y + ((BLOCK_HEIGHT - measured.height) / 2.0);
         draw_text(&self.name, x + 2.0, y + measured.offset_y, 26.0, WHITE);
         let mut x = x + (BLOCK_WIDTH_PER_INPUT / 2.0);
-        let triangle_width = 4.0;
+        let triangle_width = 6.0;
         for i in 0..self.inputs.len() {
             let v1 = Vec2::new(x, orig_y);
             let v2 = Vec2::new(x + (triangle_width * 2.0), orig_y);
             let v3 = Vec2::new(x + triangle_width, orig_y + triangle_width);
             draw_triangle(v1, v2, v3, WHITE);
+            let v1 = Vec2::new(x, orig_y + BLOCK_HEIGHT - triangle_width);
+            let v2 = Vec2::new(x + (triangle_width * 2.0), orig_y + BLOCK_HEIGHT - triangle_width);
+            let v3 = Vec2::new(x + triangle_width, orig_y + BLOCK_HEIGHT);
+            draw_triangle(v1, v2, v3, WHITE);
             x += BLOCK_WIDTH_PER_INPUT;
         }
+        draw_rectangle_lines(orig_x, orig_y, total_width, BLOCK_HEIGHT, 1.0, BLACK);
     }
 }
 
@@ -269,6 +277,7 @@ async fn main() {
             Input { name: "rows".into(), value: 10.0 },
             Input { name: "cols".into(), value: 10.0 },
         ],
+        num_outputs: 2,
         run_fn: run_grid,
         name: "Grid".into(),
         color: ORANGE,
@@ -280,6 +289,7 @@ async fn main() {
             Input { name: "a".into(), value: 0.0 },
             Input { name: "b".into(), value: 0.0 },
         ],
+        num_outputs: 3,
         run_fn: run_pass_time2,
     };
     let b2 = Block {
@@ -288,6 +298,7 @@ async fn main() {
             Input { name: "cy".into(), value: 0.0 },
             Input { name: "radius".into(), value: 10.0 },
         ],
+        num_outputs: 0,
         run_fn: run_circle,
         name: "Circle".into(),
         color: BLUE,
