@@ -171,10 +171,8 @@ impl EditorWindow {
         let (_, timeline_y, _, _) = timeline.dimensions();
         (s_width - self.width, 0.0, self.width, timeline_y - self.bottom_margin)
     }
-    /// returns the width/height of the remaining screen space
-    pub fn draw(&self, timeline: &Timeline) -> (f32, f32) {
+    pub fn draw(&self, timeline: &Timeline) {
         let (x, y, w, h) = self.dimensions(timeline);
-        let ret = (x, h);
         egui_macroquad::ui(|egui_ctx| {
             let mut visuals = egui::Visuals::dark();
             visuals.window_shadow.extrusion = 0.0;
@@ -195,7 +193,6 @@ impl EditorWindow {
                         });
                 });
         });
-        ret
     }
 }
 
@@ -301,14 +298,14 @@ async fn main() {
     loop {
         clear_background(WHITE);
 
-
-        let screen_space = window.draw(&timeline);
-        set_screen_space(screen_space);
-
+        let (x, _, _, h) = window.dimensions(&timeline);
+        set_screen_space((x, h));
+        block_set.run();
+        
+        window.draw(&timeline);
         // the timeline + art gets rendered below
         timeline.draw();
         block_set.draw(100.0, 100.0);
-        block_set.run();
 
         // egui gets rendered on top
         egui_macroquad::draw();
