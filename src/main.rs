@@ -171,8 +171,10 @@ impl EditorWindow {
         let (_, timeline_y, _, _) = timeline.dimensions();
         (s_width - self.width, 0.0, self.width, timeline_y - self.bottom_margin)
     }
-    pub fn draw(&self, timeline: &Timeline) {
+    /// returns the width/height of the remaining screen space
+    pub fn draw(&self, timeline: &Timeline) -> (f32, f32) {
         let (x, y, w, h) = self.dimensions(timeline);
+        let ret = (x, h);
         egui_macroquad::ui(|egui_ctx| {
             let mut visuals = egui::Visuals::dark();
             visuals.window_shadow.extrusion = 0.0;
@@ -193,6 +195,7 @@ impl EditorWindow {
                         });
                 });
         });
+        ret
     }
 }
 
@@ -203,7 +206,7 @@ fn run_grid<'a>(input: JoinedSlice<'a>, next_blocks: &[Block]) {
 
     let rows = input[0].value;
     let cols = input[1].value;
-    let (s_width, s_height) = screen_size();
+    let (s_width, s_height) = get_screen_space();
     let height_per_row = s_height / rows;
     let width_per_col = s_width / cols;
     let rows = rows as u32;
@@ -250,6 +253,16 @@ fn run_pass_time2<'a>(input: JoinedSlice<'a>, next_blocks: &[Block]) {
     (first.run_fn)(joined, next);
 }
 
+static mut SCREEN_SPACE: (f32, f32) = (0.0, 0.0);
+fn set_screen_space(s: (f32, f32)) {
+    unsafe {
+        SCREEN_SPACE = s;
+    }
+}
+fn get_screen_space() -> (f32, f32) {
+    unsafe { SCREEN_SPACE }
+}
+
 #[macroquad::main("BasicShapes")]
 async fn main() {
     let window = EditorWindow::new();
@@ -289,7 +302,8 @@ async fn main() {
         clear_background(WHITE);
 
 
-        window.draw(&timeline);
+        let screen_space = window.draw(&timeline);
+        set_screen_space(screen_space);
 
         // the timeline + art gets rendered below
         timeline.draw();
