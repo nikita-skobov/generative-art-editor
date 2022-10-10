@@ -48,16 +48,22 @@ impl<'a> Index<usize> for JoinedSlice<'a> {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum InputValue {
-    Number(f32),
+    Number(f64),
+    Point((f32, f32)),
     Color(Color),
     Selection((usize, Vec<String>)),
 }
 
+impl From<f64> for InputValue {
+    fn from(x: f64) -> Self {
+        InputValue::Number(x)
+    }
+}
 impl From<f32> for InputValue {
     fn from(x: f32) -> Self {
-        InputValue::Number(x)
+        InputValue::Number(x as f64)
     }
 }
 
@@ -75,6 +81,15 @@ impl From<&[&str]> for InputValue {
 
 impl InputValue {
     pub fn as_f32(&self) -> f32 {
+        match self {
+            InputValue::Number(x) => *x as _,
+            x => {
+                macroquad::logging::error!("Expected f32, found {:?}", x);
+                0.0
+            }
+        }
+    }
+    pub fn as_f64(&self) -> f64 {
         match self {
             InputValue::Number(x) => *x,
             x => {
@@ -105,11 +120,13 @@ impl InputValue {
     }
 }
 
+#[derive(Clone)]
 pub struct Input {
     pub name: String,
     pub value: InputValue,
 }
 
+#[derive(Clone)]
 pub struct Block {
     pub inputs: Vec<Input>,
     pub num_outputs: usize,
@@ -118,6 +135,7 @@ pub struct Block {
     pub run_fn: for<'a> fn(JoinedSlice<'a>, &BlockRunContext, &[Block]),
 }
 
+#[derive(Clone)]
 pub struct BlockSet {
     pub blocks: Vec<Block>,
 }
@@ -364,52 +382,68 @@ impl EditorWindow {
     }
     pub fn draw_block_set(&self, ui: &mut Ui, width_per_second: f32, timeline_item: &mut TimelineItem) {
         let mut duration = timeline_item.length / width_per_second;
-        ui.columns(2, |cols| {
-            cols[0].label("x");
-            cols[1].add(egui::DragValue::new(&mut timeline_item.x).speed(0.2));
-            cols[0].label("y");
-            cols[1].add(egui::DragValue::new(&mut timeline_item.y).speed(0.2));
-            cols[0].label("duration (s)");
-            cols[1].add(egui::DragValue::new(&mut duration).speed(0.2));
-            cols[0].label("color");
-            let c = &mut timeline_item.color;
-            let mut color = Color32::from_rgb((c.r * 255.0) as u8, (c.g * 255.0) as u8, (c.b * 255.0) as u8);
-            let alpha = Alpha::Opaque;
-            if egui::color_picker::color_picker_color32(&mut cols[1], &mut color, alpha) {
-                *c = Color::from_rgba(color.r(), color.g(), color.b(), 255);
-            }
-        });
+        egui::Grid::new("my_grid")
+            .num_columns(2)
+            .spacing([40.0, 4.0])
+            .show(ui, |ui| {
+                ui.label("x");
+                ui.add(egui::DragValue::new(&mut timeline_item.x).speed(0.2));
+                ui.end_row();
+                ui.label("y");
+                ui.add(egui::DragValue::new(&mut timeline_item.y).speed(0.2));
+                ui.end_row();
+                ui.label("duration (s)");
+                ui.add(egui::DragValue::new(&mut duration).speed(0.2));
+                ui.end_row();
+                ui.label("color");
+                let c = &mut timeline_item.color;
+                let mut rgb = [c.r, c.g, c.b];
+                if ui.color_edit_button_rgb(&mut rgb).changed() {
+                    c.r = rgb[0];
+                    c.g = rgb[1];
+                    c.b = rgb[2];
+                }
+                ui.end_row();
+            });
         ui.separator();
         timeline_item.length = duration * width_per_second;
 
         let block_set = &mut timeline_item.blocks;
         for (i, block) in block_set.blocks.iter_mut().enumerate() {
             ui.heading(&block.name);
-            ui.columns(2, |cols| {
-                for input in block.inputs.iter_mut() {
-                    cols[0].label(&input.name);
-                    match &mut input.value {
-                        InputValue::Number(x) => {
-                            cols[1].add(egui::DragValue::new(x).speed(1.0));
-                        }
-                        InputValue::Color(c) => {
-                            let mut color = Color32::from_rgb((c.r * 255.0) as u8, (c.g * 255.0) as u8, (c.b * 255.0) as u8);
-                            let alpha = Alpha::Opaque;
-                            if egui::color_picker::color_picker_color32(&mut cols[1], &mut color, alpha) {
-                                *c = Color::from_rgba(color.r(), color.g(), color.b(), 255);
+            egui::Grid::new(&format!("{i}_{}", block.name))
+                .num_columns(2)
+                .spacing([40.0, 4.0])
+                .show(ui, |ui| {
+                    for input in block.inputs.iter_mut() {
+                        ui.label(&input.name);
+                        match &mut input.value {
+                            InputValue::Number(x) => {
+                                ui.add(egui::DragValue::new(x).speed(1.0));
+                            }
+                            InputValue::Color(c) => {
+                                let mut rgb = [c.r, c.g, c.b];
+                                if ui.color_edit_button_rgb(&mut rgb).changed() {
+                                    c.r = rgb[0];
+                                    c.g = rgb[1];
+                                    c.b = rgb[2];
+                                }
+                            }
+                            InputValue::Selection((selected, alternatives)) => {
+                                egui::ComboBox::from_id_source(format!("{}{}", block.name, i)).show_index(
+                                    ui,
+                                    selected,
+                                    alternatives.len(),
+                                    |i| alternatives[i].to_owned()
+                                );
+                            }
+                            InputValue::Point((x, y)) => {
+                                // TODO: how to edit a pt?
                             }
                         }
-                        InputValue::Selection((selected, alternatives)) => {
-                            egui::ComboBox::from_id_source(format!("{}{}", block.name, i)).show_index(
-                                &mut cols[1],
-                                selected,
-                                alternatives.len(),
-                                |i| alternatives[i].to_owned()
-                            );
-                        }
+                        ui.end_row();
                     }
-                }
-            });
+                });
             ui.separator();
         }
     }
@@ -449,6 +483,22 @@ fn run_circle<'a>(input: JoinedSlice<'a>, ctx: &BlockRunContext, next_blocks: &[
         3.0,
         input[3].value.as_color(),
     );
+}
+
+fn run_line<'a>(input: JoinedSlice<'a>, ctx: &BlockRunContext, next_blocks: &[Block]) {
+    let rotation: f32 = 0.0;
+    let (y, x) = rotation.sin_cos();
+    let x0 = input[0].value.as_f32();
+    let y0 = input[1].value.as_f32();
+    let size = 30.0;
+    draw_line(x0, y0, x0 + x * size, y0 + y * size, 2.0, input[3].value.as_color());
+    // draw_circle_lines(
+    //     input[0].value.as_f32(),
+    //     input[1].value.as_f32(),
+    //     input[2].value.as_f32(),
+    //     3.0,
+    //     input[3].value.as_color(),
+    // );
 }
 
 fn sigmoid(x: f32) -> f32 {
@@ -530,21 +580,12 @@ async fn main() {
         name: "Circle".into(),
         color: BLUE,
     };
-    let b3 = Block {
-        inputs: vec![
-            Input { name: "cx".into(), value: 300.0.into() },
-            Input { name: "cy".into(), value: 300.0.into() },
-            Input { name: "radius".into(), value: 100.0.into() },
-            Input { name: "color".into(), value: BLACK.into() },
-        ],
-        num_outputs: 0,
-        run_fn: run_circle,
-        name: "Circle".into(),
-        color: BLUE,
-    };
     let block_set = BlockSet {
         blocks: vec![b, b1, b2],
     };
+    let mut block_set2 = block_set.clone();
+    block_set2.blocks[2].name = "Line".into();
+    block_set2.blocks[2].run_fn = run_line;
     let timeline_item = TimelineItem {
         x: 100.0,
         y: 700.0,
@@ -556,9 +597,7 @@ async fn main() {
         x: 120.0,
         y: 710.0,
         length: 200.0,
-        blocks: BlockSet { blocks: vec![
-            b3
-        ] },
+        blocks: block_set2,
         color: ORANGE,
     };
     let mut timeline_items = vec![timeline_item, timeline_item2];
