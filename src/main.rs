@@ -166,10 +166,12 @@ impl Block {
             let v2 = Vec2::new(x + (triangle_width * 2.0), orig_y);
             let v3 = Vec2::new(x + triangle_width, orig_y + triangle_width);
             draw_triangle(v1, v2, v3, WHITE);
-            let v1 = Vec2::new(x, orig_y + BLOCK_HEIGHT - triangle_width);
-            let v2 = Vec2::new(x + (triangle_width * 2.0), orig_y + BLOCK_HEIGHT - triangle_width);
-            let v3 = Vec2::new(x + triangle_width, orig_y + BLOCK_HEIGHT);
-            draw_triangle(v1, v2, v3, WHITE);
+            if i < self.num_outputs {
+                let v1 = Vec2::new(x, orig_y + BLOCK_HEIGHT - triangle_width);
+                let v2 = Vec2::new(x + (triangle_width * 2.0), orig_y + BLOCK_HEIGHT - triangle_width);
+                let v3 = Vec2::new(x + triangle_width, orig_y + BLOCK_HEIGHT);
+                draw_triangle(v1, v2, v3, WHITE);
+            }
             x += BLOCK_WIDTH_PER_INPUT;
         }
         draw_rectangle_lines(orig_x, orig_y, total_width, BLOCK_HEIGHT, 1.0, BLACK);
