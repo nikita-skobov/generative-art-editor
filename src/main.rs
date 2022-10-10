@@ -1,5 +1,5 @@
 use macroquad::prelude::*;
-use egui_macroquad::egui;
+use egui_macroquad::egui::{self, Ui};
 use std::{collections::HashMap, ops::Index};
 
 pub const BLOCK_WIDTH_PER_INPUT: f32 = 50.0;
@@ -237,7 +237,7 @@ impl EditorWindow {
         let (_, timeline_y, _, _) = timeline.dimensions();
         (s_width - self.width, 0.0, self.width, timeline_y - self.bottom_margin)
     }
-    pub fn draw(&self, timeline: &Timeline) {
+    pub fn draw(&self, timeline: &Timeline, block_set: Option<&mut BlockSet>) {
         let (x, y, w, h) = self.dimensions(timeline);
         egui_macroquad::ui(|egui_ctx| {
             let mut visuals = egui::Visuals::dark();
@@ -255,10 +255,24 @@ impl EditorWindow {
                     egui::ScrollArea::vertical()
                         .auto_shrink([false, false])
                         .show(ui, |ui| {
-                            ui.label("sdas");
+                            if let Some(set) = block_set {
+                                self.draw_block_set(ui, set);
+                            }
                         });
                 });
         });
+    }
+    pub fn draw_block_set(&self, ui: &mut Ui, block_set: &mut BlockSet) {
+        for block in block_set.blocks.iter_mut() {
+            ui.heading(&block.name);
+            ui.columns(2, |cols| {
+                for input in block.inputs.iter_mut() {
+                    cols[0].label(&input.name);
+                    cols[1].add(egui::DragValue::new(&mut input.value).speed(1.0));
+                }
+            });
+            ui.separator();
+        }
     }
 }
 
@@ -400,7 +414,7 @@ async fn main() {
         ] },
         color: ORANGE,
     };
-    let timeline_items = vec![timeline_item, timeline_item2];
+    let mut timeline_items = vec![timeline_item, timeline_item2];
     let mut open_item: Option<usize> = None;
     loop {
         clear_background(WHITE);
@@ -408,7 +422,16 @@ async fn main() {
         let (x, _, _, h) = window.dimensions(&timeline);
         set_open_item(&mut open_item, &timeline_items);
         timeline.run(&timeline_items, (x, h));
-        window.draw(&timeline);
+        if let Some(index) = open_item {
+            if let Some(item) = timeline_items.get_mut(index) {
+                window.draw(&timeline, Some(&mut item.blocks));
+            } else {
+                window.draw(&timeline, None);
+            }
+        } else {
+            window.draw(&timeline, None);
+        }
+
         // the timeline + art gets rendered below
         timeline.draw(&timeline_items);
 
