@@ -333,7 +333,7 @@ impl EditorWindow {
         let (_, timeline_y, _, _) = timeline.dimensions();
         (s_width - self.width, 0.0, self.width, timeline_y - self.bottom_margin)
     }
-    pub fn draw(&self, timeline: &Timeline, block_set: Option<&mut BlockSet>) {
+    pub fn draw(&self, timeline: &Timeline, item: Option<&mut TimelineItem>) {
         let (x, y, w, h) = self.dimensions(timeline);
         egui_macroquad::ui(|egui_ctx| {
             let mut visuals = egui::Visuals::dark();
@@ -351,14 +351,29 @@ impl EditorWindow {
                     egui::ScrollArea::vertical()
                         .auto_shrink([false, false])
                         .show(ui, |ui| {
-                            if let Some(set) = block_set {
-                                self.draw_block_set(ui, set);
+                            if let Some(item) = item {
+                                let (_, _, width, _) = timeline.dimensions();
+                                let width_per_second = width / timeline.total_time_secs;
+                                self.draw_block_set(ui, width_per_second, item);
                             }
                         });
                 });
         });
     }
-    pub fn draw_block_set(&self, ui: &mut Ui, block_set: &mut BlockSet) {
+    pub fn draw_block_set(&self, ui: &mut Ui, width_per_second: f32, timeline_item: &mut TimelineItem) {
+        let mut duration = timeline_item.length / width_per_second;
+        ui.columns(2, |cols| {
+            cols[0].label("x");
+            cols[1].add(egui::DragValue::new(&mut timeline_item.x).speed(0.2));
+            cols[0].label("y");
+            cols[1].add(egui::DragValue::new(&mut timeline_item.y).speed(0.2));
+            cols[0].label("duration (s)");
+            cols[1].add(egui::DragValue::new(&mut duration).speed(0.2));
+        });
+        ui.separator();
+        timeline_item.length = duration * width_per_second;
+
+        let block_set = &mut timeline_item.blocks;
         for (i, block) in block_set.blocks.iter_mut().enumerate() {
             ui.heading(&block.name);
             ui.columns(2, |cols| {
@@ -546,7 +561,7 @@ async fn main() {
         timeline.run(&timeline_items, (x, h));
         if let Some(index) = open_item {
             if let Some(item) = timeline_items.get_mut(index) {
-                window.draw(&timeline, Some(&mut item.blocks));
+                window.draw(&timeline, Some(item));
             } else {
                 window.draw(&timeline, None);
             }
