@@ -4,6 +4,7 @@ use std::{collections::HashMap, ops::Index};
 
 pub const BLOCK_WIDTH_PER_INPUT: f32 = 50.0;
 pub const BLOCK_HEIGHT: f32 = 40.0;
+pub const TIMELINE_ITEM_HEIGHT: f32 = 30.0;
 
 pub fn screen_size() -> (f32, f32) {
     (screen_width(), screen_height())
@@ -49,7 +50,7 @@ pub struct Block {
     pub num_outputs: usize,
     pub name: String,
     pub color: Color,
-    pub run_fn: for<'a> fn(JoinedSlice<'a>, &[Block]),
+    pub run_fn: for<'a> fn(JoinedSlice<'a>, &BlockRunContext, &[Block]),
 }
 
 pub struct BlockSet {
@@ -74,11 +75,11 @@ impl BlockSet {
             y += BLOCK_HEIGHT;
         }
     }
-    pub fn run(&self) {
+    pub fn run(&self, ctx: &BlockRunContext) {
         if let Some((first, next)) = get_next_block(&self.blocks) {
             let first_input = &first.inputs;
             let joined = JoinedSlice::new(first_input, &[]);
-            (first.run_fn)(joined, next);
+            (first.run_fn)(joined, ctx, next);
         }
     }
 }
@@ -110,6 +111,18 @@ impl Block {
     }
 }
 
+pub struct BlockRunContext {
+    pub screen_w: f32,
+    pub screen_h: f32,
+    pub percentage: f32,
+}
+
+impl BlockRunContext {
+    fn get_screen_space(&self) -> (f32, f32) {
+        (self.screen_w, self.screen_h)
+    }
+}
+
 pub struct Timeline {
     pub bar_pos: f32,
     pub max_height: f32,
@@ -119,11 +132,10 @@ pub struct Timeline {
     pub percentage_height: f32,
     /// must be at least 5s
     pub total_time_secs: f32,
-    pub mark_height: f32,
 }
 impl Timeline {
     pub fn new(percentage_height: f32) -> Self {
-        Self { bar_pos: 0.0, max_height: 300.0, min_height: 80.0, percentage_height, total_time_secs: 30.0, mark_height: 15.0 }
+        Self { bar_pos: 0.0, max_height: 300.0, min_height: 80.0, percentage_height, total_time_secs: 30.0 }
     }
     pub fn max_height(mut self, max_height: f32) -> Self {
         self.max_height = max_height;
@@ -145,22 +157,68 @@ impl Timeline {
         let y = s_height - height;
         (0.0, y, s_width, height)
     }
-    pub fn draw(&self) {
+    pub fn run(&mut self, timeline_items: &[TimelineItem], screen_space: (f32, f32)) {
+        let (_, _, width, _) = self.dimensions();
+        let step_per_1s = width / self.total_time_secs;
+        let step_per_frame = step_per_1s / 60.0; // TODO: is this right?...
+
+        // TODO: calculate which timeline items it's touching, and render them
+        let mut should_run_items = vec![];
+        for item in timeline_items {
+            if self.bar_pos >= item.x && self.bar_pos < item.x + item.length {
+                let percentage = (self.bar_pos - item.x) / item.length;
+                should_run_items.push((item.y, percentage, item));
+            }
+        }
+        // sort the items by their height. things higher up in the timeline
+        // get rendered last (ie: above)
+        should_run_items.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap());
+        // now they are sorted in order where the first items are the lowest in the timeline:
+        for (_, percentage, item) in should_run_items {
+            let ctx = BlockRunContext {
+                screen_w: screen_space.0,
+                screen_h: screen_space.1,
+                percentage,
+            };
+            item.blocks.run(&ctx);
+        }
+
+        self.bar_pos += step_per_frame;
+        if self.bar_pos > width {
+            self.bar_pos = 0.0;
+        }
+    }
+    pub fn draw(&self, timeline_items: &[TimelineItem]) {
         let (x, y, w, h) = self.dimensions();
         draw_rectangle(x, y, w, h, BEIGE);
         let percentage_of_5s = 5.0 / self.total_time_secs;
         let width_per_5s = w * percentage_of_5s;
+        let width_per_1s = width_per_5s / 5.0;
         let mut current_mark = 0.0;
         let mut current_time = 0;
         let s_height = screen_height();
-        let mark_y = s_height - self.mark_height;
         while current_mark < w {
-            draw_line(current_mark, mark_y, current_mark, s_height, 1.0, BLACK);
+            draw_line(current_mark, y, current_mark, s_height, 1.0, BLACK);
             draw_text(&format!("{current_time}s"), current_mark + 2.0, s_height - 2.0, 16.0, BLACK);
             current_time += 5;
-            current_mark += width_per_5s;
+            for _ in 0..5 {
+                current_mark += width_per_1s;
+                draw_line(current_mark, y, current_mark, s_height, 1.0, GRAY);
+            }
         }
+        for item in timeline_items {
+            draw_rectangle(item.x, item.y, item.length, TIMELINE_ITEM_HEIGHT, item.color);
+        }
+        draw_line(self.bar_pos, y, self.bar_pos, s_height, 1.0, RED);
     }
+}
+
+pub struct TimelineItem {
+    pub x: f32,
+    pub y: f32,
+    pub length: f32,
+    pub blocks: BlockSet,
+    pub color: Color,
 }
 
 pub struct EditorWindow {
@@ -204,14 +262,14 @@ impl EditorWindow {
     }
 }
 
-fn run_grid<'a>(input: JoinedSlice<'a>, next_blocks: &[Block]) {
+fn run_grid<'a>(input: JoinedSlice<'a>, ctx: &BlockRunContext, next_blocks: &[Block]) {
     let (first, next) = if let Some(x) = get_next_block(next_blocks) {
         x
     } else { return };
 
     let rows = input[0].value;
     let cols = input[1].value;
-    let (s_width, s_height) = get_screen_space();
+    let (s_width, s_height) = ctx.get_screen_space();
     let height_per_row = s_height / rows;
     let width_per_col = s_width / cols;
     let rows = rows as u32;
@@ -223,28 +281,28 @@ fn run_grid<'a>(input: JoinedSlice<'a>, next_blocks: &[Block]) {
             let inputs = [Input { name: "".into(), value: x }, Input { name: "".into(), value: y }];
             let first_inputs = &first.inputs[..];
             let joined = JoinedSlice::new(&inputs, first_inputs);
-            (first.run_fn)(joined, next);
+            (first.run_fn)(joined, ctx, next);
             x += width_per_col;
         }
         y += height_per_row;
     }
 }
 
-fn run_circle<'a>(input: JoinedSlice<'a>, next_blocks: &[Block]) {
-    // macroquad::logging::info!("Circle w/ radius: {}", input[2].value);
+fn run_circle<'a>(input: JoinedSlice<'a>, ctx: &BlockRunContext, next_blocks: &[Block]) {
     draw_circle_lines(input[0].value, input[1].value, input[2].value, 3.0, RED);
 }
 
-fn run_pass_time2<'a>(input: JoinedSlice<'a>, next_blocks: &[Block]) {
+fn run_pass_time2<'a>(input: JoinedSlice<'a>, ctx: &BlockRunContext, next_blocks: &[Block]) {
     let (first, next) = if let Some(x) = get_next_block(next_blocks) {
         x
     } else {
         return
     };
 
-    // TODO: it shouldnt just get the total time, but rather the time since
-    // this block has started rendering
-    let time = get_time() as f32;
+    // TODO: how can you do calculations based on time?
+    // currently this only returns [0, 1] but ideally
+    // you'd be able to specify some sort of multiplier
+    let time = ctx.percentage;
     let time_input = [
         Input { name: "".into(), value: 0.0 },
         Input { name: "".into(), value: 0.0 },
@@ -255,23 +313,32 @@ fn run_pass_time2<'a>(input: JoinedSlice<'a>, next_blocks: &[Block]) {
         &input[1]
     ];
     let joined = JoinedSlice::new_ex(&previous_inputs, &time_input);
-    (first.run_fn)(joined, next);
+    (first.run_fn)(joined, ctx, next);
 }
 
-static mut SCREEN_SPACE: (f32, f32) = (0.0, 0.0);
-fn set_screen_space(s: (f32, f32)) {
-    unsafe {
-        SCREEN_SPACE = s;
+fn set_open_item(open_item: &mut Option<usize>, timeline_items: &[TimelineItem]) {
+    let (mx, my) = mouse_position();
+    if !is_mouse_button_pressed(MouseButton::Left) { return }
+    for (i, item) in timeline_items.iter().enumerate().rev() {
+        if mx >= item.x && mx < item.x + item.length && my >= item.y && my < item.y + TIMELINE_ITEM_HEIGHT {
+            // if item is open, and it was clicked again, we set it to be closed.
+            if let Some(index) = open_item {
+                if *index == i {
+                    *open_item = None;
+                    return;
+                }
+            }
+            // otherwise, open it:
+            *open_item = Some(i);
+            return;
+        }
     }
-}
-fn get_screen_space() -> (f32, f32) {
-    unsafe { SCREEN_SPACE }
 }
 
 #[macroquad::main("BasicShapes")]
 async fn main() {
     let window = EditorWindow::new();
-    let timeline = Timeline::new(0.25);
+    let mut timeline = Timeline::new(0.25);
     let b = Block {
         inputs: vec![
             Input { name: "rows".into(), value: 10.0 },
@@ -303,20 +370,54 @@ async fn main() {
         name: "Circle".into(),
         color: BLUE,
     };
+    let b3 = Block {
+        inputs: vec![
+            Input { name: "cx".into(), value: 300.0 },
+            Input { name: "cy".into(), value: 300.0 },
+            Input { name: "radius".into(), value: 100.0 },
+        ],
+        num_outputs: 0,
+        run_fn: run_circle,
+        name: "Circle".into(),
+        color: BLUE,
+    };
     let block_set = BlockSet {
         blocks: vec![b, b1, b2],
     };
+    let timeline_item = TimelineItem {
+        x: 100.0,
+        y: 700.0,
+        length: 150.0,
+        blocks: block_set,
+        color: RED,
+    };
+    let timeline_item2 = TimelineItem {
+        x: 120.0,
+        y: 710.0,
+        length: 200.0,
+        blocks: BlockSet { blocks: vec![
+            b3
+        ] },
+        color: ORANGE,
+    };
+    let timeline_items = vec![timeline_item, timeline_item2];
+    let mut open_item: Option<usize> = None;
     loop {
         clear_background(WHITE);
 
         let (x, _, _, h) = window.dimensions(&timeline);
-        set_screen_space((x, h));
-        block_set.run();
-        
+        set_open_item(&mut open_item, &timeline_items);
+        timeline.run(&timeline_items, (x, h));
         window.draw(&timeline);
         // the timeline + art gets rendered below
-        timeline.draw();
-        block_set.draw(100.0, 100.0);
+        timeline.draw(&timeline_items);
+
+        // TODO: how to draw block sets (only if selected)
+        // if they are owned by timeline_items?
+        // block_set.draw(100.0, 100.0);
+        if let Some(item_index) = open_item {
+            timeline_items[item_index].blocks.draw(100.0, 100.0);
+        }
 
         // egui gets rendered on top
         egui_macroquad::draw();
