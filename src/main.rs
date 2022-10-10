@@ -1,5 +1,5 @@
 use macroquad::prelude::*;
-use egui_macroquad::egui::{self, Ui};
+use egui_macroquad::egui::{self, Ui, color_picker::Alpha, Color32};
 use std::{collections::HashMap, ops::Index};
 
 pub const BLOCK_WIDTH_PER_INPUT: f32 = 50.0;
@@ -13,13 +13,17 @@ pub fn screen_size() -> (f32, f32) {
 pub struct JoinedSlice<'a> {
     pub a: Result<&'a [Input], &'a [&'a Input]>,
     pub b: &'a [Input],
+    pub c: &'a [Input],
 }
 impl<'a> JoinedSlice<'a> {
     pub fn new(a: &'a [Input], b: &'a [Input]) -> Self {
-        Self { a: Ok(a), b }
+        Self { a: Ok(a), b, c: &[] }
     }
     pub fn new_ex(a: &'a [&'a Input], b: &'a [Input]) -> Self {
-        Self { a: Err(a), b }
+        Self { a: Err(a), b, c: &[] }
+    }
+    pub fn new_ex3(a: &'a [&'a Input], b: &'a [Input], c: &'a [Input]) -> Self {
+        Self { a: Err(a), b, c }
     }
 }
 impl<'a> Index<usize> for JoinedSlice<'a> {
@@ -35,14 +39,57 @@ impl<'a> Index<usize> for JoinedSlice<'a> {
                     return a.get_unchecked(index)
                 }
             }
-            self.b.get_unchecked(index)
+            if index < self.b.len() {
+                return self.b.get_unchecked(index);
+            }
+            // actually unsafe:
+            self.c.get_unchecked(index)
+        }
+    }
+}
+
+#[derive(Debug)]
+pub enum InputValue {
+    Number(f32),
+    Color(Color),
+}
+
+impl From<f32> for InputValue {
+    fn from(x: f32) -> Self {
+        InputValue::Number(x)
+    }
+}
+
+impl From<Color> for InputValue {
+    fn from(x: Color) -> Self {
+        InputValue::Color(x)
+    }
+}
+
+impl InputValue {
+    pub fn as_f32(&self) -> f32 {
+        match self {
+            InputValue::Number(x) => *x,
+            x => {
+                macroquad::logging::error!("Expected f32, found {:?}", x);
+                0.0
+            }
+        }
+    }
+    pub fn as_color(&self) -> Color {
+        match self {
+            InputValue::Color(x) => *x,
+            x => {
+                macroquad::logging::error!("Expected Color, found {:?}", x);
+                Color::new(0.0, 0.0, 0.0, 0.0)
+            }
         }
     }
 }
 
 pub struct Input {
     pub name: String,
-    pub value: f32, // TODO: have a value enum to support multiple value types
+    pub value: InputValue,
 }
 
 pub struct Block {
@@ -299,7 +346,18 @@ impl EditorWindow {
             ui.columns(2, |cols| {
                 for input in block.inputs.iter_mut() {
                     cols[0].label(&input.name);
-                    cols[1].add(egui::DragValue::new(&mut input.value).speed(1.0));
+                    match &mut input.value {
+                        InputValue::Number(x) => {
+                            cols[1].add(egui::DragValue::new(x).speed(1.0));
+                        }
+                        InputValue::Color(c) => {
+                            let mut color = Color32::from_rgb((c.r * 255.0) as u8, (c.g * 255.0) as u8, (c.b * 255.0) as u8);
+                            let alpha = Alpha::Opaque;
+                            if egui::color_picker::color_picker_color32(&mut cols[1], &mut color, alpha) {
+                                *c = Color::from_rgba(color.r(), color.g(), color.b(), 255);
+                            }
+                        }
+                    }
                 }
             });
             ui.separator();
@@ -312,8 +370,8 @@ fn run_grid<'a>(input: JoinedSlice<'a>, ctx: &BlockRunContext, next_blocks: &[Bl
         x
     } else { return };
 
-    let rows = input[0].value;
-    let cols = input[1].value;
+    let rows = input[0].value.as_f32();
+    let cols = input[1].value.as_f32();
     let (s_width, s_height) = ctx.get_screen_space();
     let height_per_row = s_height / rows;
     let width_per_col = s_width / cols;
@@ -323,7 +381,7 @@ fn run_grid<'a>(input: JoinedSlice<'a>, ctx: &BlockRunContext, next_blocks: &[Bl
     for _ in 0..rows {
         let mut x = width_per_col / 2.0;
         for _ in 0..cols {
-            let inputs = [Input { name: "".into(), value: x }, Input { name: "".into(), value: y }];
+            let inputs = [Input { name: "".into(), value: x.into() }, Input { name: "".into(), value: y.into() }];
             let first_inputs = &first.inputs[..];
             let joined = JoinedSlice::new(&inputs, first_inputs);
             (first.run_fn)(joined, ctx, next);
@@ -334,7 +392,13 @@ fn run_grid<'a>(input: JoinedSlice<'a>, ctx: &BlockRunContext, next_blocks: &[Bl
 }
 
 fn run_circle<'a>(input: JoinedSlice<'a>, ctx: &BlockRunContext, next_blocks: &[Block]) {
-    draw_circle_lines(input[0].value, input[1].value, input[2].value, 3.0, RED);
+    draw_circle_lines(
+        input[0].value.as_f32(),
+        input[1].value.as_f32(),
+        input[2].value.as_f32(),
+        3.0,
+        input[3].value.as_color(),
+    );
 }
 
 fn run_pass_time2<'a>(input: JoinedSlice<'a>, ctx: &BlockRunContext, next_blocks: &[Block]) {
@@ -348,16 +412,17 @@ fn run_pass_time2<'a>(input: JoinedSlice<'a>, ctx: &BlockRunContext, next_blocks
     // currently this only returns [0, 1] but ideally
     // you'd be able to specify some sort of multiplier
     let time = ctx.percentage;
+    let first_inputs = &first.inputs[..];
     let time_input = [
-        Input { name: "".into(), value: 0.0 },
-        Input { name: "".into(), value: 0.0 },
-        Input { name: "".into(), value: time }
+        Input { name: "".into(), value: 0.0.into() },
+        Input { name: "".into(), value: 0.0.into() },
+        Input { name: "".into(), value: time.into() }
     ];
     let previous_inputs = [
         &input[0],
         &input[1]
     ];
-    let joined = JoinedSlice::new_ex(&previous_inputs, &time_input);
+    let joined = JoinedSlice::new_ex3(&previous_inputs, &time_input, first_inputs);
     (first.run_fn)(joined, ctx, next);
 }
 
@@ -367,8 +432,8 @@ async fn main() {
     let mut timeline = Timeline::new(0.25);
     let b = Block {
         inputs: vec![
-            Input { name: "rows".into(), value: 10.0 },
-            Input { name: "cols".into(), value: 10.0 },
+            Input { name: "rows".into(), value: 10.0.into() },
+            Input { name: "cols".into(), value: 10.0.into() },
         ],
         num_outputs: 2,
         run_fn: run_grid,
@@ -379,17 +444,18 @@ async fn main() {
         name: "PassTime2".into(),
         color: ORANGE,
         inputs: vec![
-            Input { name: "a".into(), value: 0.0 },
-            Input { name: "b".into(), value: 0.0 },
+            Input { name: "a".into(), value: 0.0.into() },
+            Input { name: "b".into(), value: 0.0.into() },
         ],
         num_outputs: 3,
         run_fn: run_pass_time2,
     };
     let b2 = Block {
         inputs: vec![
-            Input { name: "cx".into(), value: 0.0 },
-            Input { name: "cy".into(), value: 0.0 },
-            Input { name: "radius".into(), value: 10.0 },
+            Input { name: "cx".into(), value: 0.0.into() },
+            Input { name: "cy".into(), value: 0.0.into() },
+            Input { name: "radius".into(), value: 10.0.into() },
+            Input { name: "color".into(), value: BLACK.into() },
         ],
         num_outputs: 0,
         run_fn: run_circle,
@@ -398,9 +464,10 @@ async fn main() {
     };
     let b3 = Block {
         inputs: vec![
-            Input { name: "cx".into(), value: 300.0 },
-            Input { name: "cy".into(), value: 300.0 },
-            Input { name: "radius".into(), value: 100.0 },
+            Input { name: "cx".into(), value: 300.0.into() },
+            Input { name: "cy".into(), value: 300.0.into() },
+            Input { name: "radius".into(), value: 100.0.into() },
+            Input { name: "color".into(), value: BLACK.into() },
         ],
         num_outputs: 0,
         run_fn: run_circle,
