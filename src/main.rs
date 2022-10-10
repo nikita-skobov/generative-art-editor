@@ -369,6 +369,13 @@ impl EditorWindow {
             cols[1].add(egui::DragValue::new(&mut timeline_item.y).speed(0.2));
             cols[0].label("duration (s)");
             cols[1].add(egui::DragValue::new(&mut duration).speed(0.2));
+            cols[0].label("color");
+            let c = &mut timeline_item.color;
+            let mut color = Color32::from_rgb((c.r * 255.0) as u8, (c.g * 255.0) as u8, (c.b * 255.0) as u8);
+            let alpha = Alpha::Opaque;
+            if egui::color_picker::color_picker_color32(&mut cols[1], &mut color, alpha) {
+                *c = Color::from_rgba(color.r(), color.g(), color.b(), 255);
+            }
         });
         ui.separator();
         timeline_item.length = duration * width_per_second;
