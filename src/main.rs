@@ -52,6 +52,7 @@ impl<'a> Index<usize> for JoinedSlice<'a> {
 pub enum InputValue {
     Number(f32),
     Color(Color),
+    Selection((usize, Vec<String>)),
 }
 
 impl From<f32> for InputValue {
@@ -63,6 +64,12 @@ impl From<f32> for InputValue {
 impl From<Color> for InputValue {
     fn from(x: Color) -> Self {
         InputValue::Color(x)
+    }
+}
+
+impl From<&[&str]> for InputValue {
+    fn from(x: &[&str]) -> Self {
+        InputValue::Selection((0, x.iter().map(|s| s.to_string()).collect()))
     }
 }
 
@@ -82,6 +89,17 @@ impl InputValue {
             x => {
                 macroquad::logging::error!("Expected Color, found {:?}", x);
                 Color::new(0.0, 0.0, 0.0, 0.0)
+            }
+        }
+    }
+    pub fn as_str(&self) -> &str {
+        match self {
+            InputValue::Selection((i, options)) => {
+                options[*i].as_str()
+            }
+            x => {
+                macroquad::logging::error!("Expected string options, found {:?}", x);
+                ""
             }
         }
     }
@@ -341,7 +359,7 @@ impl EditorWindow {
         });
     }
     pub fn draw_block_set(&self, ui: &mut Ui, block_set: &mut BlockSet) {
-        for block in block_set.blocks.iter_mut() {
+        for (i, block) in block_set.blocks.iter_mut().enumerate() {
             ui.heading(&block.name);
             ui.columns(2, |cols| {
                 for input in block.inputs.iter_mut() {
@@ -356,6 +374,14 @@ impl EditorWindow {
                             if egui::color_picker::color_picker_color32(&mut cols[1], &mut color, alpha) {
                                 *c = Color::from_rgba(color.r(), color.g(), color.b(), 255);
                             }
+                        }
+                        InputValue::Selection((selected, alternatives)) => {
+                            egui::ComboBox::from_id_source(format!("{}{}", block.name, i)).show_index(
+                                &mut cols[1],
+                                selected,
+                                alternatives.len(),
+                                |i| alternatives[i].to_owned()
+                            );
                         }
                     }
                 }
@@ -401,6 +427,10 @@ fn run_circle<'a>(input: JoinedSlice<'a>, ctx: &BlockRunContext, next_blocks: &[
     );
 }
 
+fn sigmoid(x: f32) -> f32 {
+    1.0 / (1.0 + std::f32::consts::E.powf(-x))
+}
+
 fn run_pass_time2<'a>(input: JoinedSlice<'a>, ctx: &BlockRunContext, next_blocks: &[Block]) {
     let (first, next) = if let Some(x) = get_next_block(next_blocks) {
         x
@@ -408,10 +438,16 @@ fn run_pass_time2<'a>(input: JoinedSlice<'a>, ctx: &BlockRunContext, next_blocks
         return
     };
 
-    // TODO: how can you do calculations based on time?
-    // currently this only returns [0, 1] but ideally
-    // you'd be able to specify some sort of multiplier
-    let time = ctx.percentage;
+    let mut time = ctx.percentage;
+    // default is linear, so use time as is
+    if input[2].value.as_str() == "sigmoid" {
+        time = sigmoid((time * 6.0) - 3.0);
+    }
+
+    // this allows the user to do arbitrary scaling
+    // ie: to use time for stuff other than [0, 1]
+    time *= input[3].value.as_f32();
+
     let first_inputs = &first.inputs[..];
     let time_input = [
         Input { name: "".into(), value: 0.0.into() },
@@ -446,6 +482,12 @@ async fn main() {
         inputs: vec![
             Input { name: "a".into(), value: 0.0.into() },
             Input { name: "b".into(), value: 0.0.into() },
+            Input { name: "algorithm".into(), value: [
+                "linear",
+                "sigmoid",
+                ][..].into()
+            },
+            Input { name: "multiply".into(), value: 10.0.into() },
         ],
         num_outputs: 3,
         run_fn: run_pass_time2,
@@ -514,10 +556,6 @@ async fn main() {
 
         // the timeline + art gets rendered below
         timeline.draw(&timeline_items);
-
-        // TODO: how to draw block sets (only if selected)
-        // if they are owned by timeline_items?
-        // block_set.draw(100.0, 100.0);
         if let Some(item_index) = open_item {
             timeline_items[item_index].blocks.draw(100.0, 100.0);
         }
