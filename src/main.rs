@@ -132,10 +132,11 @@ pub struct Timeline {
     pub percentage_height: f32,
     /// must be at least 5s
     pub total_time_secs: f32,
+    pub running: bool,
 }
 impl Timeline {
     pub fn new(percentage_height: f32) -> Self {
-        Self { bar_pos: 0.0, max_height: 300.0, min_height: 80.0, percentage_height, total_time_secs: 30.0 }
+        Self { bar_pos: 0.0, max_height: 300.0, min_height: 80.0, percentage_height, total_time_secs: 30.0, running: false }
     }
     pub fn max_height(mut self, max_height: f32) -> Self {
         self.max_height = max_height;
@@ -183,9 +184,11 @@ impl Timeline {
             item.blocks.run(&ctx);
         }
 
-        self.bar_pos += step_per_frame;
-        if self.bar_pos > width {
-            self.bar_pos = 0.0;
+        if self.running {
+            self.bar_pos += step_per_frame;
+            if self.bar_pos > width {
+                self.bar_pos = 0.0;
+            }
         }
     }
     pub fn draw(&self, timeline_items: &[TimelineItem]) {
@@ -419,8 +422,14 @@ async fn main() {
     loop {
         clear_background(WHITE);
 
-        let (x, _, _, h) = window.dimensions(&timeline);
+        // handle inputs
+        // TODO: make this neater...
         set_open_item(&mut open_item, &timeline_items);
+        if is_key_pressed(KeyCode::Space) {
+            timeline.running = !timeline.running;
+        }
+
+        let (x, _, _, h) = window.dimensions(&timeline);
         timeline.run(&timeline_items, (x, h));
         if let Some(index) = open_item {
             if let Some(item) = timeline_items.get_mut(index) {
