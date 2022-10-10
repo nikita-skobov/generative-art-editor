@@ -158,6 +158,34 @@ impl Timeline {
         let y = s_height - height;
         (0.0, y, s_width, height)
     }
+    pub fn handle_input(&mut self, open_item: &mut Option<usize>, timeline_items: &[TimelineItem]) {
+        if is_key_pressed(KeyCode::Space) {
+            self.running = !self.running;
+        }
+
+        let (mx, my) = mouse_position();
+        if !is_mouse_button_pressed(MouseButton::Left) { return }
+
+        for (i, item) in timeline_items.iter().enumerate().rev() {
+            if mx >= item.x && mx < item.x + item.length && my >= item.y && my < item.y + TIMELINE_ITEM_HEIGHT {
+                // if item is open, and it was clicked again, we set it to be closed.
+                if let Some(index) = open_item {
+                    if *index == i {
+                        *open_item = None;
+                        return;
+                    }
+                }
+                // otherwise, open it:
+                *open_item = Some(i);
+                return;
+            }
+        }
+        // if no timeline items were clicked, then check if we clicked inside the timeline window
+        let (_, y, _, _) = self.dimensions();
+        if my > y {
+            self.bar_pos = mx;
+        }
+    }
     pub fn run(&mut self, timeline_items: &[TimelineItem], screen_space: (f32, f32)) {
         let (_, _, width, _) = self.dimensions();
         let step_per_1s = width / self.total_time_secs;
@@ -333,25 +361,6 @@ fn run_pass_time2<'a>(input: JoinedSlice<'a>, ctx: &BlockRunContext, next_blocks
     (first.run_fn)(joined, ctx, next);
 }
 
-fn set_open_item(open_item: &mut Option<usize>, timeline_items: &[TimelineItem]) {
-    let (mx, my) = mouse_position();
-    if !is_mouse_button_pressed(MouseButton::Left) { return }
-    for (i, item) in timeline_items.iter().enumerate().rev() {
-        if mx >= item.x && mx < item.x + item.length && my >= item.y && my < item.y + TIMELINE_ITEM_HEIGHT {
-            // if item is open, and it was clicked again, we set it to be closed.
-            if let Some(index) = open_item {
-                if *index == i {
-                    *open_item = None;
-                    return;
-                }
-            }
-            // otherwise, open it:
-            *open_item = Some(i);
-            return;
-        }
-    }
-}
-
 #[macroquad::main("BasicShapes")]
 async fn main() {
     let window = EditorWindow::new();
@@ -422,12 +431,7 @@ async fn main() {
     loop {
         clear_background(WHITE);
 
-        // handle inputs
-        // TODO: make this neater...
-        set_open_item(&mut open_item, &timeline_items);
-        if is_key_pressed(KeyCode::Space) {
-            timeline.running = !timeline.running;
-        }
+        timeline.handle_input(&mut open_item, &timeline_items);
 
         let (x, _, _, h) = window.dimensions(&timeline);
         timeline.run(&timeline_items, (x, h));
