@@ -465,7 +465,8 @@ fn run_pass_time2<'a>(input: JoinedSlice<'a>, ctx: &BlockRunContext, next_blocks
     let mut time = ctx.percentage;
     // default is linear, so use time as is
     if input[2].value.as_str() == "sigmoid" {
-        time = sigmoid((time * 6.0) - 3.0);
+        let sigmoid_sensitivity = input[4].value.as_f32();
+        time = sigmoid((time * sigmoid_sensitivity) - (sigmoid_sensitivity / 2.0));
     }
 
     // this allows the user to do arbitrary scaling
@@ -512,6 +513,7 @@ async fn main() {
                 ][..].into()
             },
             Input { name: "multiply".into(), value: 10.0.into() },
+            Input { name: "sigmoid_sensitivity".into(), value: 6.0.into() },
         ],
         num_outputs: 3,
         run_fn: run_pass_time2,
