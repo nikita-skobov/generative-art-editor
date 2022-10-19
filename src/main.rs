@@ -2,6 +2,8 @@ use macroquad::prelude::*;
 use egui_macroquad::egui::{self, Ui, color_picker::Alpha, Color32};
 use std::{collections::HashMap, ops::Index};
 
+mod dependency_resolution;
+
 pub const BLOCK_WIDTH_PER_INPUT: f32 = 50.0;
 pub const BLOCK_HEIGHT: f32 = 40.0;
 pub const TIMELINE_ITEM_HEIGHT: f32 = 30.0;
