@@ -30,12 +30,6 @@
         <script src="https://not-fl3.github.io/miniquad-samples/sapp_jsutils.js"></script>
         <script>
             load("game.wasm")
-            const ws = new WebSocket(`ws:/${window.location.host}/ws`)
-            ws.addEventListener('message', (event) => {
-                console.log("RELOAD")
-                load("game.wasm")
-            });
-
         </script>
     </body>
 </html>
