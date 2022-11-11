@@ -1,53 +1,24 @@
+use color::Hsl;
 use macroquad::prelude::*;
-use egui_macroquad::egui::{self, Ui, color_picker::Alpha, Color32};
-use std::{collections::HashMap, ops::Index};
+use egui_macroquad::egui::{self, Ui};
+use ::rand::prelude::*;
+use rand_chacha::ChaCha8Rng;
 
 mod dependency_resolution;
+mod draw;
+mod color;
+
+use draw::{BlockContext, DraggableBlock, BlockConnectionNode, OutputResult, FONT_SIZE, FONT_SIZE_F32};
+use draw::ConnectionType::*;
 
 pub const BLOCK_WIDTH_PER_INPUT: f32 = 50.0;
 pub const BLOCK_HEIGHT: f32 = 40.0;
 pub const TIMELINE_ITEM_HEIGHT: f32 = 30.0;
+pub const ERR_FONT_SIZE: u16 = 20;
+pub const ERR_FONT_SIZE_F32: f32 = ERR_FONT_SIZE as f32;
 
 pub fn screen_size() -> (f32, f32) {
     (screen_width(), screen_height())
-}
-
-pub struct JoinedSlice<'a> {
-    pub a: Result<&'a [Input], &'a [&'a Input]>,
-    pub b: &'a [Input],
-    pub c: &'a [Input],
-}
-impl<'a> JoinedSlice<'a> {
-    pub fn new(a: &'a [Input], b: &'a [Input]) -> Self {
-        Self { a: Ok(a), b, c: &[] }
-    }
-    pub fn new_ex(a: &'a [&'a Input], b: &'a [Input]) -> Self {
-        Self { a: Err(a), b, c: &[] }
-    }
-    pub fn new_ex3(a: &'a [&'a Input], b: &'a [Input], c: &'a [Input]) -> Self {
-        Self { a: Err(a), b, c }
-    }
-}
-impl<'a> Index<usize> for JoinedSlice<'a> {
-    type Output = Input;
-
-    fn index(&self, index: usize) -> &Self::Output {
-        unsafe {
-            match self.a {
-                Ok(a) => if index < a.len() {
-                    return a.get_unchecked(index)
-                }
-                Err(a) => if index < a.len() {
-                    return a.get_unchecked(index)
-                }
-            }
-            if index < self.b.len() {
-                return self.b.get_unchecked(index);
-            }
-            // actually unsafe:
-            self.c.get_unchecked(index)
-        }
-    }
 }
 
 #[derive(Debug, Clone)]
@@ -56,6 +27,14 @@ pub enum InputValue {
     Point((f32, f32)),
     Color(Color),
     Selection((usize, Vec<String>)),
+    ListNumbers(Vec<f64>),
+    ListPoints(Vec<(f32, f32)>),
+}
+
+impl From<(f32, f32)> for InputValue {
+    fn from(orig: (f32, f32)) -> Self {
+        InputValue::Point(orig)
+    }
 }
 
 impl From<f64> for InputValue {
@@ -63,6 +42,7 @@ impl From<f64> for InputValue {
         InputValue::Number(x)
     }
 }
+
 impl From<f32> for InputValue {
     fn from(x: f32) -> Self {
         InputValue::Number(x as f64)
@@ -100,6 +80,25 @@ impl InputValue {
             }
         }
     }
+    pub fn as_point(&self) -> (f32, f32) {
+        match self {
+            InputValue::Point(x) => *x,
+            x => {
+                macroquad::logging::error!("Expected Point, found {:?}", x);
+                (0.0, 0.0)
+            }
+        }
+    }
+    pub fn as_list_points(&self) -> &Vec<(f32, f32)> {
+        match self {
+            InputValue::ListPoints(x) => x,
+            x => {
+                macroquad::logging::error!("Expected Point, found {:?}", x);
+                static X: Vec<(f32, f32)> = vec![];
+                &X
+            }
+        }
+    }
     pub fn as_color(&self) -> Color {
         match self {
             InputValue::Color(x) => *x,
@@ -122,86 +121,11 @@ impl InputValue {
     }
 }
 
-#[derive(Clone)]
-pub struct Input {
-    pub name: String,
-    pub value: InputValue,
-}
-
-#[derive(Clone)]
-pub struct Block {
-    pub inputs: Vec<Input>,
-    pub num_outputs: usize,
-    pub name: String,
-    pub color: Color,
-    pub run_fn: for<'a> fn(JoinedSlice<'a>, &BlockRunContext, &[Block]),
-}
-
-#[derive(Clone)]
-pub struct BlockSet {
-    pub blocks: Vec<Block>,
-}
-
-pub fn get_next_block(next_blocks: &[Block]) -> Option<(&Block, &[Block])> {
-    if let Some(first_block) = next_blocks.first() {
-        let next = if let Some(next) = next_blocks.get(1..) {
-            next
-        } else { &[] };
-        Some((first_block, next))
-    } else {
-        None
-    }
-}
-
-impl BlockSet {
-    pub fn draw(&self, x: f32, mut y: f32) {
-        for b in self.blocks.iter() {
-            b.draw(x, y);
-            y += BLOCK_HEIGHT;
-        }
-    }
-    pub fn run(&self, ctx: &BlockRunContext) {
-        if let Some((first, next)) = get_next_block(&self.blocks) {
-            let first_input = &first.inputs;
-            let joined = JoinedSlice::new(first_input, &[]);
-            (first.run_fn)(joined, ctx, next);
-        }
-    }
-}
-
-impl Block {
-    pub fn draw(&self, x: f32, y: f32) {
-        let num_parts = self.inputs.len().max(self.num_outputs);
-        let total_width = num_parts as f32 * BLOCK_WIDTH_PER_INPUT;
-        let orig_y = y;
-        let orig_x = x;
-        draw_rectangle(orig_x, orig_y, total_width, BLOCK_HEIGHT, self.color);
-        let measured = measure_text(&self.name, None, 26, 1.0);
-        let y = y + ((BLOCK_HEIGHT - measured.height) / 2.0);
-        draw_text(&self.name, x + 2.0, y + measured.offset_y, 26.0, WHITE);
-        let mut x = x + (BLOCK_WIDTH_PER_INPUT / 2.0);
-        let triangle_width = 6.0;
-        for i in 0..self.inputs.len() {
-            let v1 = Vec2::new(x, orig_y);
-            let v2 = Vec2::new(x + (triangle_width * 2.0), orig_y);
-            let v3 = Vec2::new(x + triangle_width, orig_y + triangle_width);
-            draw_triangle(v1, v2, v3, WHITE);
-            if i < self.num_outputs {
-                let v1 = Vec2::new(x, orig_y + BLOCK_HEIGHT - triangle_width);
-                let v2 = Vec2::new(x + (triangle_width * 2.0), orig_y + BLOCK_HEIGHT - triangle_width);
-                let v3 = Vec2::new(x + triangle_width, orig_y + BLOCK_HEIGHT);
-                draw_triangle(v1, v2, v3, WHITE);
-            }
-            x += BLOCK_WIDTH_PER_INPUT;
-        }
-        draw_rectangle_lines(orig_x, orig_y, total_width, BLOCK_HEIGHT, 1.0, BLACK);
-    }
-}
-
 pub struct BlockRunContext {
     pub screen_w: f32,
     pub screen_h: f32,
     pub percentage: f32,
+    pub rng: ChaCha8Rng,
 }
 
 impl BlockRunContext {
@@ -273,7 +197,7 @@ impl Timeline {
             self.bar_pos = mx;
         }
     }
-    pub fn run(&mut self, timeline_items: &[TimelineItem], screen_space: (f32, f32)) {
+    pub fn run(&mut self, timeline_items: &[TimelineItem], screen_space: (f32, f32), error_queue: &mut ErrorQueue, seed: &mut u64) {
         let (_, _, width, _) = self.dimensions();
         let step_per_1s = width / self.total_time_secs;
         let step_per_frame = step_per_1s / 60.0; // TODO: is this right?...
@@ -291,12 +215,25 @@ impl Timeline {
         should_run_items.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap());
         // now they are sorted in order where the first items are the lowest in the timeline:
         for (_, percentage, item) in should_run_items {
-            let ctx = BlockRunContext {
+            let mut ctx = BlockRunContext {
                 screen_w: screen_space.0,
                 screen_h: screen_space.1,
                 percentage,
+                rng: ChaCha8Rng::seed_from_u64(*seed),
             };
-            item.blocks.run(&ctx);
+            if !error_queue.has_errors() {
+                if let Err(e) = item.blocks.run(&mut ctx) {
+                    self.running = false;
+                    // if this is the first error message,
+                    // add an extra error message that explains how
+                    // to clear errors.
+                    if error_queue.errors.len() == 0 {
+                        let e2 = format!("Error during evaluation. Pausing preview. Close all error messages to resume");
+                        error_queue.errors.push(ErrorMessage { e: e2 });
+                    }
+                    error_queue.errors.push(ErrorMessage { e });
+                }
+            }
         }
 
         if self.running {
@@ -335,17 +272,25 @@ pub struct TimelineItem {
     pub x: f32,
     pub y: f32,
     pub length: f32,
-    pub blocks: BlockSet,
+    pub blocks: BlockContext,
     pub color: Color,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum SubWindowShown {
+    BlockSelection,
+    ValueEditing,
 }
 
 pub struct EditorWindow {
     pub width: f32,
     pub bottom_margin: f32,
+    pub window_shown: SubWindowShown,
 }
 impl EditorWindow {
     pub fn new() -> Self {
         Self {
+            window_shown: SubWindowShown::BlockSelection,
             width: 350.0,
             bottom_margin: 12.0,
         }
@@ -355,7 +300,14 @@ impl EditorWindow {
         let (_, timeline_y, _, _) = timeline.dimensions();
         (s_width - self.width, 0.0, self.width, timeline_y - self.bottom_margin)
     }
-    pub fn draw(&self, timeline: &Timeline, item: Option<&mut TimelineItem>) {
+    pub fn draw(
+        &mut self,
+        timeline: &Timeline,
+        item: Option<&mut TimelineItem>,
+        seed: &mut u64,
+        global_rng: &mut ChaCha8Rng,
+        available_blocks: &[(fn () -> DraggableBlock, &str)],
+    ) {
         let (x, y, w, h) = self.dimensions(timeline);
         egui_macroquad::ui(|egui_ctx| {
             let mut visuals = egui::Visuals::dark();
@@ -373,16 +325,44 @@ impl EditorWindow {
                     egui::ScrollArea::vertical()
                         .auto_shrink([false, false])
                         .show(ui, |ui| {
-                            if let Some(item) = item {
-                                let (_, _, width, _) = timeline.dimensions();
-                                let width_per_second = width / timeline.total_time_secs;
-                                self.draw_block_set(ui, width_per_second, item);
+                            ui.horizontal(|ui| {
+                                ui.selectable_value(&mut self.window_shown, SubWindowShown::BlockSelection, "Blocks");
+                                ui.selectable_value(&mut self.window_shown, SubWindowShown::ValueEditing, "Edit Values");
+                            });
+                            ui.separator();
+
+                            match &self.window_shown {
+                                SubWindowShown::BlockSelection => {
+                                    if let Some(item) = item {
+                                        ui.label("Click on a block to add it to the canvas");
+                                        ui.separator();
+                                        for (block_add_fn, block_name) in available_blocks {
+                                            if ui.button(*block_name).clicked() {
+                                                let mut b = block_add_fn();
+                                                let random_x = global_rng.gen_range(0.0..w);
+                                                let random_y = global_rng.gen_range(0.0..h);
+                                                b.x = random_x;
+                                                b.y = random_y;
+                                                item.blocks.add_block(b);
+                                            }
+                                        }
+                                    } else {
+                                        ui.label("Select a timeline item first to add blocks");
+                                    }
+                                }
+                                SubWindowShown::ValueEditing => {
+                                    if let Some(item) = item {
+                                        let (_, _, width, _) = timeline.dimensions();
+                                        let width_per_second = width / timeline.total_time_secs;
+                                        self.draw_block_set(ui, width_per_second, item, seed);
+                                    }
+                                }
                             }
                         });
                 });
         });
     }
-    pub fn draw_block_set(&self, ui: &mut Ui, width_per_second: f32, timeline_item: &mut TimelineItem) {
+    pub fn draw_block_set(&self, ui: &mut Ui, width_per_second: f32, timeline_item: &mut TimelineItem, seed: &mut u64) {
         let mut duration = timeline_item.length / width_per_second;
         egui::Grid::new("my_grid")
             .num_columns(2)
@@ -406,12 +386,18 @@ impl EditorWindow {
                     c.b = rgb[2];
                 }
                 ui.end_row();
+                ui.label("random seed");
+                ui.add(egui::DragValue::new(seed).speed(1.0));
             });
         ui.separator();
         timeline_item.length = duration * width_per_second;
 
         let block_set = &mut timeline_item.blocks;
         for (i, block) in block_set.blocks.iter_mut().enumerate() {
+            let block = match block {
+                Some(b) => b,
+                None => continue,
+            };
             ui.heading(&block.name);
             egui::Grid::new(&format!("{i}_{}", block.name))
                 .num_columns(2)
@@ -441,6 +427,16 @@ impl EditorWindow {
                             }
                             InputValue::Point((x, y)) => {
                                 // TODO: how to edit a pt?
+                                ui.add(egui::DragValue::new(x).speed(1.0));
+                                ui.label(&format!("{}_y", input.name));
+                                ui.add(egui::DragValue::new(y).speed(1.0));
+                            }
+                            // the rest are all only editable dynamically, so
+                            // no need to show them in the manual editor
+                            _ => {
+                                let mut txt = "DYNAMICONLY";
+                                let val = egui::TextEdit::singleline(&mut txt).interactive(false);
+                                ui.add_enabled(false, val);
                             }
                         }
                         ui.end_row();
@@ -451,184 +447,640 @@ impl EditorWindow {
     }
 }
 
-fn run_grid<'a>(input: JoinedSlice<'a>, ctx: &BlockRunContext, next_blocks: &[Block]) {
-    let (first, next) = if let Some(x) = get_next_block(next_blocks) {
-        x
-    } else { return };
-
-    let rows = input[0].value.as_f32();
-    let cols = input[1].value.as_f32();
-    let (s_width, s_height) = ctx.get_screen_space();
-    let height_per_row = s_height / rows;
-    let width_per_col = s_width / cols;
-    let rows = rows as u32;
-    let cols = cols as u32;
-    let mut y = height_per_row / 2.0;
-    for _ in 0..rows {
-        let mut x = width_per_col / 2.0;
-        for _ in 0..cols {
-            let inputs = [Input { name: "".into(), value: x.into() }, Input { name: "".into(), value: y.into() }];
-            let first_inputs = &first.inputs[..];
-            let joined = JoinedSlice::new(&inputs, first_inputs);
-            (first.run_fn)(joined, ctx, next);
-            x += width_per_col;
-        }
-        y += height_per_row;
-    }
-}
-
-fn run_circle<'a>(input: JoinedSlice<'a>, ctx: &BlockRunContext, next_blocks: &[Block]) {
-    draw_circle_lines(
-        input[0].value.as_f32(),
-        input[1].value.as_f32(),
-        input[2].value.as_f32(),
-        3.0,
-        input[3].value.as_color(),
-    );
-}
-
-fn run_line<'a>(input: JoinedSlice<'a>, ctx: &BlockRunContext, next_blocks: &[Block]) {
-    let rotation: f32 = 0.0;
-    let (y, x) = rotation.sin_cos();
-    let x0 = input[0].value.as_f32();
-    let y0 = input[1].value.as_f32();
-    let size = 30.0;
-    draw_line(x0, y0, x0 + x * size, y0 + y * size, 2.0, input[3].value.as_color());
-    // draw_circle_lines(
-    //     input[0].value.as_f32(),
-    //     input[1].value.as_f32(),
-    //     input[2].value.as_f32(),
-    //     3.0,
-    //     input[3].value.as_color(),
-    // );
-}
-
 fn sigmoid(x: f32) -> f32 {
     1.0 / (1.0 + std::f32::consts::E.powf(-x))
 }
 
-fn run_pass_time2<'a>(input: JoinedSlice<'a>, ctx: &BlockRunContext, next_blocks: &[Block]) {
-    let (first, next) = if let Some(x) = get_next_block(next_blocks) {
-        x
-    } else {
-        return
-    };
+#[derive(Default, Debug)]
+pub struct ErrorQueue {
+    pub errors: Vec<ErrorMessage>,
+}
+impl ErrorQueue {
+    pub fn has_errors(&self) -> bool {
+        self.errors.len() > 0
+    }
+    pub fn draw(&mut self) {
+        let mut remove = None;
+        let mut y = 0.0;
+        for (i, err) in self.errors.iter().enumerate() {
+            let measured = measure_text(&err.e, None, ERR_FONT_SIZE, 1.0);
+            draw_rectangle(0.0, y, measured.width + 30.0, measured.height, RED);
+            draw_text(&err.e, 0.0, y + measured.offset_y, ERR_FONT_SIZE_F32, WHITE);
+            draw_text("X", measured.width + 10.0, y + measured.offset_y, ERR_FONT_SIZE_F32, WHITE);
+            if is_mouse_button_pressed(MouseButton::Left) {
+                let (mx, my) = mouse_position();
+                if mx >= measured.width + 10.0 && mx < measured.width + 30.0
+                    && my >= y && my < y + measured.height
+                {
+                    remove = Some(i);
+                }
+            }
+            y += measured.height;
+        }
+        if let Some(remove_index) = remove {
+            self.errors.remove(remove_index);
+        }
+    }
+}
 
-    let mut time = ctx.percentage;
-    // default is linear, so use time as is
-    if input[2].value.as_str() == "sigmoid" {
-        let sigmoid_sensitivity = input[4].value.as_f32();
-        time = sigmoid((time * sigmoid_sensitivity) - (sigmoid_sensitivity / 2.0));
+#[derive(Debug, Default)]
+pub struct ErrorMessage {
+    pub e: String,
+}
+
+pub struct CircleBlock;
+impl CircleBlock {
+    const NAME: &'static str = "Circle";
+
+    pub fn run(
+        inputs: &Vec<&InputValue>,
+        _ctx: &mut BlockRunContext,
+    ) -> Option<Vec<OutputResult>> {
+        let x = &inputs[0].as_f32();
+        let y = &inputs[1].as_f32();
+        let radius = &inputs[2].as_f32();
+        let color = &inputs[3].as_color();
+        draw_circle(*x, *y, *radius, *color);
+        None
     }
 
-    // this allows the user to do arbitrary scaling
-    // ie: to use time for stuff other than [0, 1]
-    time *= input[3].value.as_f32();
+    pub fn to_draggable_block() -> DraggableBlock {
+        let mut draggable_block2 = DraggableBlock::default();
+        draggable_block2.inputs = vec![
+            BlockConnectionNode::new("cx", Inputs),
+            BlockConnectionNode::new("cy", Inputs),
+            BlockConnectionNode::new("radius", Inputs),
+            BlockConnectionNode::new_with_input_type("color", BLACK.into(), Inputs),
+        ];
+        draggable_block2.name = format!("{} {}", draggable_block2.id, Self::NAME);
+        draggable_block2.run_fn = Self::run;
+        draggable_block2.calculate_width();
+        draggable_block2
+    }
+}
 
-    let first_inputs = &first.inputs[..];
-    let time_input = [
-        Input { name: "".into(), value: 0.0.into() },
-        Input { name: "".into(), value: 0.0.into() },
-        Input { name: "".into(), value: time.into() }
-    ];
-    let previous_inputs = [
-        &input[0],
-        &input[1]
-    ];
-    let joined = JoinedSlice::new_ex3(&previous_inputs, &time_input, first_inputs);
-    (first.run_fn)(joined, ctx, next);
+pub struct SquareBlock;
+impl SquareBlock {
+    const NAME: &'static str = "Square";
+
+    pub fn run(
+        inputs: &Vec<&InputValue>,
+        _ctx: &mut BlockRunContext,
+    ) -> Option<Vec<OutputResult>> {
+        let x = &inputs[0].as_f32();
+        let y = &inputs[1].as_f32();
+        let size = &inputs[2].as_f32();
+        let color = &inputs[3].as_color();
+        draw_rectangle_lines(*x, *y, *size, *size, 2.0, *color);
+        None
+    }
+
+    pub fn to_draggable_block() -> DraggableBlock {
+        let mut draggable_block2 = DraggableBlock::default();
+        draggable_block2.inputs = vec![
+            BlockConnectionNode::new("x0", Inputs),
+            BlockConnectionNode::new("y0", Inputs),
+            BlockConnectionNode::new("size", Inputs),
+            BlockConnectionNode::new_with_input_type("color", BLACK.into(), Inputs),
+        ];
+        draggable_block2.name = format!("{} {}", draggable_block2.id, Self::NAME);
+        draggable_block2.run_fn = Self::run;
+        draggable_block2.calculate_width();
+        draggable_block2
+    }
+}
+
+
+pub struct FlattenPointsBlock;
+impl FlattenPointsBlock {
+    const NAME: &'static str = "FlattenPoints";
+
+    pub fn run(
+        inputs: &Vec<&InputValue>,
+        _ctx: &mut BlockRunContext,
+    ) -> Option<Vec<OutputResult>> {
+        match inputs[0] {
+            InputValue::ListPoints(_) => {
+                // TODO: do something smarter than clone.
+                Some(vec![OutputResult::SingleValue(inputs[0].clone())])
+            }
+            _ => None,
+        }
+    }
+
+    pub fn to_draggable_block() -> DraggableBlock {
+        let mut draggable_block2 = DraggableBlock::default();
+        draggable_block2.inputs = vec![
+            BlockConnectionNode::new_with_input_type("pts", InputValue::Point((0.0, 0.0)), Inputs),
+        ];
+        draggable_block2.outputs = vec![
+            BlockConnectionNode::new_with_input_type("pts", InputValue::ListPoints(vec![]), Outputs),
+        ];
+        draggable_block2.flatten_inputs = true;
+        draggable_block2.name = format!("{} {}", draggable_block2.id, Self::NAME);
+        draggable_block2.run_fn = Self::run;
+        draggable_block2.calculate_width();
+        draggable_block2
+    }
+}
+
+
+
+pub struct PointConnectionBlock;
+impl PointConnectionBlock {
+    const NAME: &'static str = "PointConnection";
+
+    pub fn run(
+        inputs: &Vec<&InputValue>,
+        _ctx: &mut BlockRunContext,
+    ) -> Option<Vec<OutputResult>> {
+        let pts = inputs[0].as_list_points();
+        // macroquad::logging::info!("{:?}", pts);
+        let mut previous_pt: Option<&(f32, f32)> = None;
+        for pt in pts.iter() {
+            if let Some((prev_x, prev_y)) = previous_pt {
+                draw_line(*prev_x, *prev_y, pt.0, pt.1, 2.0, RED);
+                previous_pt = Some(pt);
+            } else {
+                previous_pt = Some(pt);
+            }
+        }
+        None
+    }
+
+    pub fn to_draggable_block() -> DraggableBlock {
+        let mut draggable_block2 = DraggableBlock::default();
+        draggable_block2.inputs = vec![
+            BlockConnectionNode::new_with_input_type("pts", InputValue::ListPoints(vec![]), Inputs),
+        ];
+        // draggable_block2.outputs = vec![
+        //     BlockConnectionNode::new_with_input_type("pts", InputValue::ListPoints(vec![]), Outputs),
+        // ];
+        draggable_block2.name = format!("{} {}", draggable_block2.id, Self::NAME);
+        draggable_block2.run_fn = Self::run;
+        draggable_block2.calculate_width();
+        draggable_block2
+    }
+}
+
+
+pub struct RandomPointBlock;
+impl RandomPointBlock {
+    const NAME: &'static str = "RandomPoint";
+
+    pub fn run(
+        inputs: &Vec<&InputValue>,
+        ctx: &mut BlockRunContext,
+    ) -> Option<Vec<OutputResult>> {
+        let pt0 = *&inputs[0].as_point();
+        let pt1 = *&inputs[1].as_point();
+        let pt2 = *&inputs[2].as_point();
+        let pt3 = *&inputs[3].as_point();
+        if ctx.rng.gen_bool(0.5) {
+            Some(vec![OutputResult::SingleValue(pt0.into()), OutputResult::SingleValue(pt2.into())])
+        } else {
+            Some(vec![OutputResult::SingleValue(pt1.into()), OutputResult::SingleValue(pt3.into())])
+        }
+    }
+
+    pub fn to_draggable_block() -> DraggableBlock {
+        let mut draggable_block2 = DraggableBlock::default();
+        draggable_block2.inputs = vec![
+            BlockConnectionNode::new_with_input_type("pt0", InputValue::Point((0.0, 0.0)), Inputs),
+            BlockConnectionNode::new_with_input_type("pt1", InputValue::Point((0.0, 0.0)), Inputs),
+            BlockConnectionNode::new_with_input_type("pt2", InputValue::Point((0.0, 0.0)), Inputs),
+            BlockConnectionNode::new_with_input_type("pt3", InputValue::Point((0.0, 0.0)), Inputs),
+        ];
+        draggable_block2.outputs = vec![
+            BlockConnectionNode::new_with_input_type("ptA", InputValue::Point((0.0, 0.0)), Outputs),
+            BlockConnectionNode::new_with_input_type("ptB", InputValue::Point((0.0, 0.0)), Outputs),
+        ];
+        draggable_block2.name = format!("{} {}", draggable_block2.id, Self::NAME);
+        draggable_block2.run_fn = Self::run;
+        draggable_block2.calculate_width();
+        draggable_block2
+    }
+}
+
+
+pub struct LineBlock;
+impl LineBlock {
+    const NAME: &'static str = "Line";
+
+    pub fn run(
+        inputs: &Vec<&InputValue>,
+        _ctx: &mut BlockRunContext,
+    ) -> Option<Vec<OutputResult>> {
+        let x1 = &inputs[0].as_f32();
+        let y1 = &inputs[1].as_f32();
+        let x2 = &inputs[2].as_f32();
+        let y2 = &inputs[3].as_f32();
+        let color = &inputs[4].as_color();
+        draw_line(*x1, *y1, *x2, *y2, 2.0, *color);
+        None
+    }
+
+    pub fn to_draggable_block() -> DraggableBlock {
+        let mut draggable_block2 = DraggableBlock::default();
+        draggable_block2.inputs = vec![
+            BlockConnectionNode::new("x1", Inputs),
+            BlockConnectionNode::new("y1", Inputs),
+            BlockConnectionNode::new("x2", Inputs),
+            BlockConnectionNode::new("y2", Inputs),
+            BlockConnectionNode::new_with_input_type("color", BLACK.into(), Inputs),
+        ];
+        draggable_block2.name = format!("{} {}", draggable_block2.id, Self::NAME);
+        draggable_block2.run_fn = Self::run;
+        draggable_block2.calculate_width();
+        draggable_block2
+    }
+}
+
+
+pub struct PtExtractBlock;
+impl PtExtractBlock {
+    const NAME: &'static str = "PtExtract";
+
+    pub fn run(
+        inputs: &Vec<&InputValue>,
+        _ctx: &mut BlockRunContext,
+    ) -> Option<Vec<OutputResult>> {
+        let (x, y) = *&inputs[0].as_point();
+        Some(vec![OutputResult::SingleValue(x.into()), OutputResult::SingleValue(y.into())])
+    }
+
+    pub fn to_draggable_block() -> DraggableBlock {
+        let mut draggable_block2 = DraggableBlock::default();
+        draggable_block2.inputs = vec![
+            BlockConnectionNode::new_with_input_type("pt", InputValue::Point((0.0, 0.0)), Inputs),
+        ];
+        draggable_block2.outputs = vec![
+            BlockConnectionNode::new("x", Outputs),
+            BlockConnectionNode::new("y", Outputs),
+        ];
+        draggable_block2.name = format!("{} {}", draggable_block2.id, Self::NAME);
+        draggable_block2.run_fn = Self::run;
+        draggable_block2.calculate_width();
+        draggable_block2
+    }
+}
+
+
+pub struct PtCombineBlock;
+impl PtCombineBlock {
+    const NAME: &'static str = "PtCombine";
+
+    pub fn run(
+        inputs: &Vec<&InputValue>,
+        _ctx: &mut BlockRunContext,
+    ) -> Option<Vec<OutputResult>> {
+        let x = *&inputs[0].as_f32();
+        let y = *&inputs[1].as_f32();
+        Some(vec![OutputResult::SingleValue((x, y).into())])
+    }
+
+    pub fn to_draggable_block() -> DraggableBlock {
+        let mut draggable_block2 = DraggableBlock::default();
+        draggable_block2.inputs = vec![
+            BlockConnectionNode::new("x", Inputs),
+            BlockConnectionNode::new("y", Inputs),
+        ];
+        draggable_block2.outputs = vec![
+            BlockConnectionNode::new_with_input_type("pt", (0.0, 0.0).into(), Outputs),
+        ];
+        draggable_block2.name = format!("{} {}", draggable_block2.id, Self::NAME);
+        draggable_block2.run_fn = Self::run;
+        draggable_block2.calculate_width();
+        draggable_block2
+    }
+}
+
+
+pub struct HslColorBlock;
+impl HslColorBlock {
+    const NAME: &'static str = "HslColor";
+
+    pub fn run(
+        inputs: &Vec<&InputValue>,
+        _ctx: &mut BlockRunContext,
+    ) -> Option<Vec<OutputResult>> {
+        let h = &inputs[0].as_f32();
+        let s = &inputs[1].as_f32();
+        let l = &inputs[1].as_f32();
+        let hsl = Hsl::new(*h, *s, *l);
+        let (r, g, b) = hsl.hsl_to_rgb();
+        let c = Color::from_rgba(r, g, b, 255);
+        Some(vec![OutputResult::SingleValue(c.into())])
+    }
+    pub fn to_draggable_block() -> DraggableBlock {
+        let mut draggable_block2 = DraggableBlock::default();
+        draggable_block2.inputs = vec![
+            BlockConnectionNode::new_with_input_type("hue", 0.0.into(), Inputs),
+            BlockConnectionNode::new_with_input_type("saturation", 0.5.into(), Inputs),
+            BlockConnectionNode::new_with_input_type("lightness", 0.5.into(), Inputs),
+        ];
+        draggable_block2.outputs = vec![
+            BlockConnectionNode::new_with_input_type("color", WHITE.into(), Outputs)
+        ];
+        draggable_block2.name = format!("{} {}", draggable_block2.id, Self::NAME);
+        draggable_block2.run_fn = Self::run;
+        draggable_block2.calculate_width();
+        draggable_block2
+    }
+}
+
+pub struct RandOffSetBlock;
+impl RandOffSetBlock {
+    const NAME: &'static str = "RandomOffset";
+
+    pub fn run(
+        inputs: &Vec<&InputValue>,
+        ctx: &mut BlockRunContext,
+    ) -> Option<Vec<OutputResult>> {
+        let s = &inputs[0].as_f32();
+        let low = *&inputs[1].as_f32();
+        let high = *&inputs[2].as_f32();
+        let range = low..high;
+        let val = if range.is_empty() {
+            low
+        } else {
+            ctx.rng.gen_range(low..high)
+        };
+        let c = *s + val;
+        Some(vec![OutputResult::SingleValue(c.into())])
+    }
+    pub fn to_draggable_block() -> DraggableBlock {
+        let mut draggable_block2 = DraggableBlock::default();
+        draggable_block2.inputs = vec![
+            BlockConnectionNode::new("source", Inputs),
+            BlockConnectionNode::new_with_input_type("low", (-10.0).into(), Inputs),
+            BlockConnectionNode::new_with_input_type("high", 10.0.into(), Inputs),
+        ];
+        draggable_block2.outputs = vec![
+            BlockConnectionNode::new("value", Outputs)
+        ];
+        draggable_block2.name = format!("{} {}", draggable_block2.id, Self::NAME);
+        draggable_block2.run_fn = Self::run;
+        draggable_block2.calculate_width();
+        draggable_block2
+    }
+}
+
+pub struct IterationBlock;
+impl IterationBlock {
+    const NAME: &'static str = "Iterate";
+
+    pub fn to_draggable_block() -> DraggableBlock {
+        let mut draggable_block = DraggableBlock::default();
+        draggable_block.inputs = vec![
+            BlockConnectionNode::new_with_input_type("pass", 0.0.into(), Inputs),    
+            BlockConnectionNode::new_with_input_type("start", 0.0.into(), Inputs),
+            BlockConnectionNode::new_with_input_type("end", 100.0.into(), Inputs),
+            BlockConnectionNode::new_with_input_type("by", 10.0.into(), Inputs)
+        ];
+        draggable_block.outputs = vec![
+            BlockConnectionNode::new("pass", Outputs),    
+            BlockConnectionNode::new("value", Outputs),
+        ];
+        draggable_block.name = format!("{} {}", draggable_block.id, Self::NAME);
+        draggable_block.run_fn = Self::run;
+        draggable_block.calculate_width();
+        draggable_block
+    }
+    pub fn run(
+        inputs: &Vec<&InputValue>,
+        ctx: &mut BlockRunContext,
+    ) -> Option<Vec<OutputResult>> {
+        let pass = inputs[0].as_f32();
+        let start = *&inputs[1].as_f32();
+        let end = *&inputs[2].as_f32();
+        let by = *&inputs[3].as_f32();
+        let mut out1 = vec![];
+        let mut out2 = vec![];
+        let mut value = start;
+        while value <= end {
+            out1.push(InputValue::Number(pass as _));
+            out2.push(InputValue::Number(value as _));
+            value += by;
+        }
+    
+        Some(vec![OutputResult::Iteration(out1), OutputResult::Iteration(out2)])
+    }
+}
+
+
+pub struct GridBlock;
+impl GridBlock {
+    const NAME: &'static str = "Grid";
+
+    pub fn to_draggable_block() -> DraggableBlock {
+        let mut draggable_block = DraggableBlock::default();
+        draggable_block.inputs = vec![
+            BlockConnectionNode::new_with_input_type("rows", 10.0.into(), Inputs),
+            BlockConnectionNode::new_with_input_type("cols", 10.0.into(), Inputs)
+        ];
+        draggable_block.outputs = vec![
+            BlockConnectionNode::new("xi", Outputs),
+            BlockConnectionNode::new("yi", Outputs),
+        ];
+        draggable_block.name = format!("{} {}", draggable_block.id, Self::NAME);
+        draggable_block.run_fn = Self::run;
+        draggable_block.calculate_width();
+        draggable_block
+    }
+    pub fn run(
+        inputs: &Vec<&InputValue>,
+        ctx: &mut BlockRunContext,
+    ) -> Option<Vec<OutputResult>> {
+        let rows = &inputs[0].as_f32();
+        let cols = &inputs[1].as_f32();
+        let (s_width, s_height) = ctx.get_screen_space();
+        let height_per_row = s_height / rows;
+        let width_per_col = s_width / cols;
+        let rows = *rows as u32;
+        let cols = *cols as u32;
+        let mut y = height_per_row / 2.0;
+        let mut out1 = vec![];
+        let mut out2 = vec![];
+        for _ in 0..rows {
+            let mut x = width_per_col / 2.0;
+            for _ in 0..cols {
+                out1.push(InputValue::Number(x as _));
+                out2.push(InputValue::Number(y as _));
+                x += width_per_col;
+            }
+            y += height_per_row;
+        }
+    
+        Some(vec![OutputResult::Iteration(out1), OutputResult::Iteration(out2)])
+    }
+}
+
+pub struct SquareGridBlock;
+impl SquareGridBlock {
+    const NAME: &'static str = "SquareGrid";
+
+    pub fn to_draggable_block() -> DraggableBlock {
+        let mut draggable_block = DraggableBlock::default();
+        draggable_block.inputs = vec![
+            BlockConnectionNode::new_with_input_type("dimension", 10.0.into(), Inputs),
+        ];
+        draggable_block.outputs = vec![
+            BlockConnectionNode::new_with_input_type("pt0", InputValue::Point((0.0, 0.0)), Outputs),
+            BlockConnectionNode::new_with_input_type("pt1", InputValue::Point((0.0, 0.0)), Outputs),
+            BlockConnectionNode::new_with_input_type("pt2", InputValue::Point((0.0, 0.0)), Outputs),
+            BlockConnectionNode::new_with_input_type("pt3", InputValue::Point((0.0, 0.0)), Outputs),
+        ];
+        draggable_block.name = format!("{} {}", draggable_block.id, Self::NAME);
+        draggable_block.run_fn = Self::run;
+        draggable_block.calculate_width();
+        draggable_block
+    }
+    pub fn run(
+        inputs: &Vec<&InputValue>,
+        ctx: &mut BlockRunContext,
+    ) -> Option<Vec<OutputResult>> {
+        let dimension = &inputs[0].as_f32();
+        let (s_width, s_height) = ctx.get_screen_space();
+        // we fix it into a square, so use the min size
+        let screen_size = s_width.min(s_height);
+        let size_per_tile = screen_size / dimension;
+        let mut out1 = vec![];
+        let mut out2 = vec![];
+        let mut out3 = vec![];
+        let mut out4 = vec![];
+        let dim_u32 = *dimension as u32;
+        let mut y = 0.0;
+        for _ in 0..dim_u32 {
+            let mut x = 0.0;
+            for _ in 0..dim_u32 {
+                out1.push(InputValue::Point((x as _, y as _)));
+                out2.push(InputValue::Point((x + size_per_tile, y as _)));
+                out3.push(InputValue::Point((x + size_per_tile, y + size_per_tile)));
+                out4.push(InputValue::Point((x, y + size_per_tile)));
+                x += size_per_tile;
+            }
+            y += size_per_tile;
+        }
+    
+        Some(vec![
+            OutputResult::Iteration(out1),
+            OutputResult::Iteration(out2),
+            OutputResult::Iteration(out3),
+            OutputResult::Iteration(out4),
+        ])
+    }
+}
+
+pub struct ClockBlock;
+impl ClockBlock {
+    const NAME: &'static str = "Clock";
+
+    pub fn to_draggable_block() -> DraggableBlock {
+        let mut draggable_block3 = draw::DraggableBlock::default();
+        draggable_block3.inputs = vec![
+            draw::BlockConnectionNode::new_with_input_type("smoothing", 
+                [
+                    "none",
+                    "sigmoid",
+                ][..].into(),
+                draw::ConnectionType::Inputs
+            ),
+            draw::BlockConnectionNode::new_with_input_type("sigmoid sensitivity", 6.0.into(), draw::ConnectionType::Inputs),
+            draw::BlockConnectionNode::new_with_input_type("scale_by", 10.0.into(), draw::ConnectionType::Inputs),
+        ];
+        draggable_block3.outputs = vec![
+            draw::BlockConnectionNode::new("time", draw::ConnectionType::Outputs),
+        ];
+        draggable_block3.name = format!("{} {}", draggable_block3.id, Self::NAME);
+        draggable_block3.run_fn = Self::run;
+        draggable_block3.calculate_width();
+        draggable_block3
+    }
+    pub fn run(
+        inputs: &Vec<&InputValue>,
+        ctx: &mut BlockRunContext,
+    ) -> Option<Vec<OutputResult>> {
+        let mut time = ctx.percentage;
+        // default is linear, so use time as is
+        if inputs[0].as_str() == "sigmoid" {
+            let sigmoid_sensitivity = inputs[1].as_f32();
+            time = sigmoid((time * sigmoid_sensitivity) - (sigmoid_sensitivity / 2.0));
+        }
+    
+        // this allows the user to do arbitrary scaling
+        // ie: to use time for stuff other than [0, 1]
+        time *= inputs[2].as_f32();
+    
+        Some(vec![OutputResult::SingleValue(time.into())])
+    }
 }
 
 #[macroquad::main("BasicShapes")]
 async fn main() {
-    let window = EditorWindow::new();
+    // macroquad::logging::info!("{}", rng.gen_range(0..100));
+    let mut window = EditorWindow::new();
     let mut timeline = Timeline::new(0.25);
-    let b = Block {
-        inputs: vec![
-            Input { name: "rows".into(), value: 10.0.into() },
-            Input { name: "cols".into(), value: 10.0.into() },
-        ],
-        num_outputs: 2,
-        run_fn: run_grid,
-        name: "Grid".into(),
-        color: ORANGE,
-    };
-    let b1 = Block {
-        name: "PassTime2".into(),
-        color: ORANGE,
-        inputs: vec![
-            Input { name: "a".into(), value: 0.0.into() },
-            Input { name: "b".into(), value: 0.0.into() },
-            Input { name: "algorithm".into(), value: [
-                "linear",
-                "sigmoid",
-                ][..].into()
-            },
-            Input { name: "multiply".into(), value: 10.0.into() },
-            Input { name: "sigmoid_sensitivity".into(), value: 6.0.into() },
-        ],
-        num_outputs: 3,
-        run_fn: run_pass_time2,
-    };
-    let b2 = Block {
-        inputs: vec![
-            Input { name: "cx".into(), value: 0.0.into() },
-            Input { name: "cy".into(), value: 0.0.into() },
-            Input { name: "radius".into(), value: 10.0.into() },
-            Input { name: "color".into(), value: BLACK.into() },
-        ],
-        num_outputs: 0,
-        run_fn: run_circle,
-        name: "Circle".into(),
-        color: BLUE,
-    };
-    let block_set = BlockSet {
-        blocks: vec![b, b1, b2],
-    };
-    let mut block_set2 = block_set.clone();
-    block_set2.blocks[2].name = "Line".into();
-    block_set2.blocks[2].run_fn = run_line;
+    let available_blocks = [
+        (ClockBlock::to_draggable_block as fn() -> DraggableBlock, ClockBlock::NAME),
+        (GridBlock::to_draggable_block, GridBlock::NAME),
+        (CircleBlock::to_draggable_block, CircleBlock::NAME),
+        (HslColorBlock::to_draggable_block, HslColorBlock::NAME),
+        (RandOffSetBlock::to_draggable_block, RandOffSetBlock::NAME),
+        (SquareBlock::to_draggable_block, SquareBlock::NAME),
+        (SquareGridBlock::to_draggable_block, SquareGridBlock::NAME),
+        (LineBlock::to_draggable_block, LineBlock::NAME),
+        (RandomPointBlock::to_draggable_block, RandomPointBlock::NAME),
+        (PtExtractBlock::to_draggable_block, PtExtractBlock::NAME),
+        (IterationBlock::to_draggable_block, IterationBlock::NAME),
+        (FlattenPointsBlock::to_draggable_block, FlattenPointsBlock::NAME),
+        (PointConnectionBlock::to_draggable_block, PointConnectionBlock::NAME),
+        (PtCombineBlock::to_draggable_block, PtCombineBlock::NAME),
+    ];
+    let block_context = draw::BlockContext::new([]);
+    let mut errors = ErrorQueue::default();
+    // TODO: each item should have its own rand seed, and then no need to pass
+    // it to window
     let timeline_item = TimelineItem {
         x: 100.0,
         y: 700.0,
         length: 150.0,
-        blocks: block_set,
+        blocks: block_context,
         color: RED,
     };
-    let timeline_item2 = TimelineItem {
-        x: 120.0,
-        y: 710.0,
-        length: 200.0,
-        blocks: block_set2,
-        color: ORANGE,
-    };
-    let mut timeline_items = vec![timeline_item, timeline_item2];
+    let mut timeline_items = vec![timeline_item];
     let mut open_item: Option<usize> = None;
+    let mut rand_seed: u64 = 101;
+    let mut global_rng = ChaCha8Rng::seed_from_u64(rand_seed);
     loop {
         clear_background(WHITE);
 
         timeline.handle_input(&mut open_item, &timeline_items);
 
         let (x, _, _, h) = window.dimensions(&timeline);
-        timeline.run(&timeline_items, (x, h));
+        timeline.run(&timeline_items, (x, h), &mut errors, &mut rand_seed);
         if let Some(index) = open_item {
             if let Some(item) = timeline_items.get_mut(index) {
-                window.draw(&timeline, Some(item));
+                window.draw(&timeline, Some(item), &mut rand_seed, &mut global_rng, &available_blocks[..]);
             } else {
-                window.draw(&timeline, None);
+                window.draw(&timeline, None, &mut rand_seed, &mut global_rng, &available_blocks[..]);
             }
         } else {
-            window.draw(&timeline, None);
+            window.draw(&timeline, None, &mut rand_seed, &mut global_rng, &available_blocks[..]);
         }
 
         // the timeline + art gets rendered below
         timeline.draw(&timeline_items);
         if let Some(item_index) = open_item {
-            timeline_items[item_index].blocks.draw(100.0, 100.0);
+            // timeline_items[item_index].blocks.draw(100.0, 100.0);
+            let block_context = &mut timeline_items[item_index].blocks;
+            block_context.update();
+            block_context.draw();
         }
 
         // egui gets rendered on top
         egui_macroquad::draw();
+        errors.draw();
         next_frame().await
     }
 }
